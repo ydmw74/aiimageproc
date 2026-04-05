@@ -14,7 +14,7 @@ export default defineConfig({
     outDir: "dist",
     emptyOutDir: true,
     rollupOptions: {
-      external: ["ollama", "better-sqlite3"],
+      external: ["ollama", "better-sqlite3", "openai", "axios", "electron-store", "electron-updater"],
       output: {
         manualChunks: {
           vendor: ["react", "react-dom"],
@@ -27,6 +27,6 @@ export default defineConfig({
     port: 5173,
   },
   optimizeDeps: {
-    exclude: ["ollama", "better-sqlite3"],
+    exclude: ["ollama", "better-sqlite3", "openai", "axios", "electron-store", "electron-updater"],
   },
 });

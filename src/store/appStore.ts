@@ -1,7 +1,6 @@
 import { create } from 'zustand';
 import { persist, subscribeWithSelector } from 'zustand/middleware';
 import type { AppState, AppActions, ProviderType, Mask, ImageData, ProviderConfig } from '@/types';
-import { kiProviderRouter } from '@/services/providers/router';
 import { generatePromptFromFilters, getMaskedPrompt } from '@/services/prompts';
 
 type AppStore = AppState & AppActions;
@@ -20,9 +19,10 @@ const initialState: AppState = {
   // KI Settings
   selectedProvider: 'ollama',
   providerConfigs: {
-    openai: { type: 'openai', apiKey: undefined, model: 'gpt-4o' },
+    openai: { type: 'openai', apiKey: undefined, url: 'https://api.openai.com/v1', model: 'gpt-4o' },
     ollama: { type: 'ollama', url: 'http://localhost:11434', model: 'llava' },
-    openrouter: { type: 'openrouter', apiKey: undefined, model: 'openai/gpt-4o' },
+    'ollama-cloud': { type: 'ollama-cloud', apiKey: undefined, url: 'https://api.ollama.ai/v1', model: 'llava' },
+    openrouter: { type: 'openrouter', apiKey: undefined, url: 'https://openrouter.ai/api/v1', model: 'openai/gpt-4o' },
   },
   availableModels: [],
   selectedModel: 'llava',
@@ -64,19 +64,104 @@ export const useAppStore = create<AppStore>()(
       ...initialState,
       
       // Project Management
-      loadProject: (projectId: string) => {
-        // TODO: Load from SQLite
-        console.log('Loading project:', projectId);
+      loadProject: async (projectId: string) => {
+        if (!window.electronAPI) {
+          console.error('Electron API not available');
+          return;
+        }
+        
+        try {
+          const result = await window.electronAPI.dbGetProject(parseInt(projectId));
+          if (result.success && result.project) {
+            const project = result.project;
+            // Load project state
+            set({
+              currentProjectId: projectId,
+              // Note: Image and masks would need to be loaded from files
+              // For now, just set the ID
+            });
+            console.log('Loaded project:', project.name);
+          } else {
+            console.error('Failed to load project:', result.error);
+          }
+        } catch (error) {
+          console.error('Error loading project:', error);
+        }
       },
       
       saveProject: async () => {
-        // TODO: Save to SQLite
-        console.log('Saving project...');
+        const state = get();
+        if (!window.electronAPI) {
+          console.error('Electron API not available');
+          return;
+        }
+        
+        try {
+          const projectId = state.currentProjectId;
+          const settings = {
+            selectedProvider: state.selectedProvider,
+            selectedModel: state.selectedModel,
+            brightness: state.brightness,
+            contrast: state.contrast,
+            saturation: state.saturation,
+            autoPromptEnabled: state.autoPromptEnabled,
+          };
+          
+          if (projectId) {
+            // Update existing project
+            await window.electronAPI.dbUpdateProject(parseInt(projectId), {
+              settings_json: JSON.stringify(settings),
+            });
+            console.log('Updated project:', projectId);
+          } else {
+            // Create new project
+            const result = await window.electronAPI.dbCreateProject('Untitled Project');
+            if (result.success && result.id) {
+              await window.electronAPI.dbUpdateProject(result.id, {
+                settings_json: JSON.stringify(settings),
+              });
+              set({ currentProjectId: result.id.toString() });
+              console.log('Created project:', result.id);
+            }
+          }
+        } catch (error) {
+          console.error('Error saving project:', error);
+        }
+        
+        // Also save image data to file if needed
+        // Note: In a full implementation, we'd save the image to disk
+        // and store the path in the database
       },
       
       exportProject: async () => {
-        // TODO: Export to ZIP
-        console.log('Exporting project...');
+        const state = get();
+        if (!state.originalImage) {
+          alert('No image loaded');
+          return;
+        }
+        
+        if (!window.electronAPI) {
+          console.error('Electron API not available');
+          return;
+        }
+        
+        try {
+          const base64Data = state.originalImage.src.split(',')[1] || '';
+          const binaryString = atob(base64Data);
+          const bytes = new Uint8Array(binaryString.length);
+          for (let i = 0; i < binaryString.length; i++) {
+            bytes[i] = binaryString.charCodeAt(i);
+          }
+          const result = await window.electronAPI.exportFile('untitled-project.png', bytes as unknown as Buffer);
+          
+          if (result.success) {
+            console.log('Exported to:', result.filePath);
+          } else if (result.error) {
+            console.error('Export failed:', result.error);
+          }
+        } catch (error) {
+          console.error('Error exporting project:', error);
+        }
       },
       
       // Image Operations
@@ -88,7 +173,7 @@ export const useAppStore = create<AppStore>()(
             img.onload = () => {
               set({
                 originalImage: {
-                  id: crypto.randomUUID(),
+                  id: Math.random().toString(36).substring(2) + Date.now().toString(36),
                   src: e.target?.result as string,
                   width: img.width,
                   height: img.height,
@@ -197,12 +282,41 @@ export const useAppStore = create<AppStore>()(
       },
       
       fetchAvailableModels: async () => {
-        // TODO: Fetch from actual provider
-        set({ availableModels: [] });
+        const state = get();
+        const providerConfig = state.providerConfigs[state.selectedProvider];
+        
+        try {
+          if (!window.electronAPI) {
+            console.warn('Electron API not available');
+            set({ availableModels: [] });
+            return;
+          }
+          
+          const result = await window.electronAPI.kiListModels(providerConfig);
+          if (result.success && result.models) {
+            set({ availableModels: result.models });
+            
+            // Auto-select first vision-capable model if none selected
+            if (!state.selectedModel && result.models.length > 0) {
+              const visionModel = result.models.find((m: any) => m.supportsVision);
+              set({ selectedModel: visionModel?.id || result.models[0].id });
+            }
+          } else {
+            console.error('Failed to fetch models:', result.error);
+            set({ availableModels: [] });
+          }
+        } catch (error) {
+          console.error('Error fetching models:', error);
+          set({ availableModels: [] });
+        }
       },
       
       setSelectedModel: (model: string) => {
         set({ selectedModel: model });
+      },
+      
+      setAvailableModels: (models) => {
+        set({ availableModels: models });
       },
       
       processImage: async (prompt: string) => {
@@ -210,6 +324,10 @@ export const useAppStore = create<AppStore>()(
         
         if (!state.originalImage) {
           throw new Error('No image loaded');
+        }
+        
+        if (state.apiUsage.estimatedCost >= state.budgetLimit) {
+          throw new Error(`Budget limit exceeded. Current cost: $${state.apiUsage.estimatedCost.toFixed(4)}, Limit: $${state.budgetLimit}`);
         }
         
         set({ isProcessing: true, processingProgress: 0 });
@@ -242,26 +360,34 @@ export const useAppStore = create<AppStore>()(
           // Get provider config
           const providerConfig = state.providerConfigs[state.selectedProvider];
           
-          // Check vision capability
-          const visionCheck = await kiProviderRouter.checkVisionCapability(
-            state.selectedModel || providerConfig.model || '',
-            providerConfig
-          );
-          
-          if (!visionCheck.supported) {
-            throw new Error(visionCheck.message);
+          if (!window.electronAPI) {
+            throw new Error('Electron API not available');
           }
-          
+
+          // Check vision capability
+          const modelId = state.selectedModel || providerConfig.model || '';
+          const visionCheck = await window.electronAPI.kiCheckVisionCapability(modelId, providerConfig);
+
+          if (!visionCheck.success || !visionCheck.supported) {
+            throw new Error(visionCheck.message || 'Vision capability check failed');
+          }
+
           set({ processingProgress: 20 });
-          
+
           // Process image
-          const result = await kiProviderRouter.processImage({
+          const ipcResult = await window.electronAPI.kiProcessImage({
             imageBase64: state.originalImage.src,
             maskBase64,
             prompt: finalPrompt,
             provider: state.selectedProvider,
-            model: state.selectedModel || providerConfig.model || '',
-          });
+            model: modelId,
+          }, providerConfig);
+
+          if (!ipcResult.success) {
+            throw new Error(ipcResult.error || 'Image processing failed');
+          }
+
+          const result = ipcResult;
           
           set({ processingProgress: 80 });
           
@@ -292,22 +418,30 @@ export const useAppStore = create<AppStore>()(
       testConnection: async () => {
         const state = get();
         const providerConfig = state.providerConfigs[state.selectedProvider];
-        
+
+        if (!window.electronAPI) {
+          console.error('Electron API not available');
+          return false;
+        }
+
         try {
-          const connected = await kiProviderRouter.testConnection(providerConfig);
-          
+          const result = await window.electronAPI.kiTestConnection(providerConfig, state.selectedModel || undefined);
+          const connected = result.success && result.connected;
+
           if (connected) {
             // Fetch available models
-            const models = await kiProviderRouter.listAvailableModels(providerConfig);
-            set({ availableModels: models });
-            
-            // Auto-select first vision-capable model if none selected
-            if (!state.selectedModel && models.length > 0) {
-              const visionModel = models.find(m => m.supportsVision) || models[0];
-              set({ selectedModel: visionModel.id });
+            const modelsResult = await window.electronAPI.kiListModels(providerConfig);
+            if (modelsResult.success && modelsResult.models) {
+              set({ availableModels: modelsResult.models });
+
+              // Auto-select first vision-capable model if none selected
+              if (!state.selectedModel && modelsResult.models.length > 0) {
+                const visionModel = modelsResult.models.find((m: any) => m.supportsVision) || modelsResult.models[0];
+                set({ selectedModel: visionModel.id });
+              }
             }
           }
-          
+
           return connected;
         } catch (error) {
           console.error('Connection test failed:', error);

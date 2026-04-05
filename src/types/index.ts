@@ -1,10 +1,10 @@
 // Provider Types
-export type ProviderType = 'openai' | 'ollama' | 'openrouter';
+export type ProviderType = 'openai' | 'ollama' | 'ollama-cloud' | 'openrouter';
 
 export interface ProviderConfig {
   type: ProviderType;
   apiKey?: string;
-  url?: string; // For Ollama
+  url?: string; // API Base URL (for all providers)
   model?: string;
 }
 
@@ -133,8 +133,9 @@ export interface AppActions {
   setProvider: (provider: ProviderType) => void;
   updateProviderConfig: (provider: ProviderType, config: Partial<ProviderConfig>) => void;
   fetchAvailableModels: () => Promise<void>;
+  setAvailableModels: (models: ModelInfo[]) => void;
   setSelectedModel: (model: string) => void;
-  processImage: (prompt: string) => Promise<any>;
+  processImage: (prompt: string) => Promise<ImageProcessResult>;
   testConnection: () => Promise<boolean>;
   
   // Filter Operations

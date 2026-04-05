@@ -3,6 +3,14 @@ import * as fabric from 'fabric';
 import { useAppStore } from '@/store/appStore';
 import { applyMagicWand } from '@/utils/magicWand';
 
+function generateUUID(): string {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = Math.random() * 16 | 0;
+    const v = c === 'x' ? r : (r & 0x3 | 0x8);
+    return v.toString(16);
+  });
+}
+
 export function CanvasEditor() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const fabricRef = useRef<fabric.Canvas | null>(null);
@@ -125,7 +133,7 @@ export function CanvasEditor() {
         if (magicWandPath) {
           canvas.add(magicWandPath);
           addMask({
-            id: crypto.randomUUID(),
+            id: generateUUID(),
             type: 'magic-wand',
             data: magicWandPath.toJSON(),
             color: 'red',
@@ -211,7 +219,7 @@ export function CanvasEditor() {
 
       if (shape) {
         addMask({
-          id: crypto.randomUUID(),
+          id: generateUUID(),
           type: activeTool as any,
           data: shape.toJSON(),
           color: 'red',

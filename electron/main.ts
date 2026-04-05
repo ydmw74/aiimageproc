@@ -1,11 +1,14 @@
 import { app, BrowserWindow, ipcMain, dialog, safeStorage } from 'electron';
-import { join } from 'path';
+import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import Store from 'electron-store';
-import { autoUpdater } from 'electron-updater';
+import pkg from 'electron-updater';
 import Database from 'better-sqlite3';
+import { kiProviderRouter } from './services/router.js';
 
-const __dirname = fileURLToPath(new URL('.', import.meta.url));
+const { autoUpdater } = pkg;
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 // Store for settings (non-sensitive)
 const store = new Store();
@@ -59,35 +62,60 @@ function initializeDatabase() {
 let mainWindow: BrowserWindow | null = null;
 
 function createWindow() {
+  console.log('Creating window...');
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
     minWidth: 1000,
     minHeight: 700,
     webPreferences: {
-      preload: join(__dirname, 'preload.js'),
+      preload: join(__dirname, 'preload.cjs'),
       nodeIntegration: false,
       contextIsolation: true,
+      // sandbox: false is required because the preload script uses CommonJS (preload.cjs)
+      // and the Electron sandbox does not support CJS preloads in all environments.
+      // All renderer→main communication goes through contextBridge (see preload.cjs).
+      sandbox: false,
     },
     titleBarStyle: 'default',
     backgroundColor: '#1e1e1e',
+    show: true,
+  });
+
+  console.log('Window created, focusing...');
+  mainWindow.focus();
+
+  mainWindow.webContents.on('did-fail-load', (_, errorCode, errorDescription) => {
+    console.error('Failed to load:', errorCode, errorDescription);
+  });
+
+  mainWindow.webContents.on('render-process-gone', (_, details) => {
+    console.error('Renderer process gone:', details);
   });
 
   // Load app
-  if (process.env.NODE_ENV === 'development') {
+  const isDev = process.env.NODE_ENV === 'development' || process.env.DEV === '1' || !app.isPackaged;
+  
+  if (isDev) {
     mainWindow.loadURL('http://localhost:5173');
     mainWindow.webContents.openDevTools();
   } else {
-    mainWindow.loadFile(join(__dirname, '../index.html'));
+    // In production, use app.getAppPath() which points to app.asar
+    mainWindow.loadFile(join(app.getAppPath(), 'dist', 'index.html'));
   }
 
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
 
-  // Auto-updater
-  autoUpdater.checkForUpdatesAndNotify();
+  // Auto-updater (only in production)
+  if (process.env.NODE_ENV !== 'development') {
+    autoUpdater.checkForUpdatesAndNotify();
+  }
 }
+
+// Disable GPU hardware acceleration to prevent crashes
+app.disableHardwareAcceleration();
 
 app.whenReady().then(() => {
   // Initialize database
@@ -127,6 +155,33 @@ ipcMain.handle('file:open', async () => {
     ],
   });
   return result;
+});
+
+ipcMain.handle('file:read', async (_event, { filePath }) => {
+  try {
+    const path = await import('path');
+    const resolvedPath = path.resolve(filePath);
+
+    const allowedBasePaths = [
+      app.getPath('userData'),
+      app.getPath('downloads'),
+      app.getPath('pictures'),
+      app.getPath('desktop'),
+      app.getPath('documents'),
+      app.getPath('temp'),
+    ];
+    const isAllowed = allowedBasePaths.some(p => resolvedPath.startsWith(p));
+
+    if (!isAllowed) {
+      return { success: false, error: 'Reading from this location is not allowed for security reasons.' };
+    }
+
+    const fs = await import('fs/promises');
+    const data = await fs.readFile(resolvedPath);
+    return { success: true, data };
+  } catch (error) {
+    return { success: false, error: String(error) };
+  }
 });
 
 ipcMain.handle('file:save', async (_event, { filePath, data }) => {
@@ -357,6 +412,62 @@ ipcMain.handle('app:getVersion', () => {
 
 ipcMain.handle('app:getPlatform', () => {
   return process.platform;
+});
+
+// KI Provider Operations
+ipcMain.handle('ki:testConnection', async (_event, { config, modelId }) => {
+  try {
+    const result = await kiProviderRouter.fullConnectionTest(modelId || '', config);
+    return { success: true, ...result };
+  } catch (error) {
+    return { success: false, connected: false, connectionError: String(error) };
+  }
+});
+
+ipcMain.handle('ki:listModels', async (_event, { config }) => {
+  try {
+    const models = await kiProviderRouter.listAvailableModels(config);
+    return { success: true, models };
+  } catch (error) {
+    return { success: false, error: String(error) };
+  }
+});
+
+ipcMain.handle('ki:checkVisionCapability', async (_event, { modelId, config }) => {
+  try {
+    const result = await kiProviderRouter.checkVisionCapability(modelId, config);
+    return { success: true, ...result };
+  } catch (error) {
+    return { success: false, error: String(error) };
+  }
+});
+
+ipcMain.handle('ki:processImage', async (_event, { params, config }) => {
+  try {
+    const { nativeImage } = await import('electron');
+    const MAX_DIMENSION = 1536;
+    const MAX_SIZE_BYTES = 4 * 1024 * 1024;
+
+    let imageBase64: string = params.imageBase64;
+    const base64Data = imageBase64.split(',')[1] || imageBase64;
+    const imageBuffer = Buffer.from(base64Data, 'base64');
+
+    if (imageBuffer.length > MAX_SIZE_BYTES) {
+      const img = nativeImage.createFromBuffer(imageBuffer);
+      const { width, height } = img.getSize();
+      const scale = Math.min(MAX_DIMENSION / width, MAX_DIMENSION / height, 1);
+      const resized = img.resize({
+        width: Math.floor(width * scale),
+        height: Math.floor(height * scale),
+      });
+      imageBase64 = `data:image/jpeg;base64,${resized.toJPEG(85).toString('base64')}`;
+    }
+
+    const result = await kiProviderRouter.processImage({ ...params, imageBase64 }, config);
+    return { success: true, ...result };
+  } catch (error) {
+    return { success: false, error: String(error) };
+  }
 });
 
 // Auto-updater events

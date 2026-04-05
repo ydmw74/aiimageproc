@@ -1,6 +1,6 @@
 import { Ollama } from 'ollama';
-import type { ProviderType, ModelInfo, ImageProcessParams, ImageProcessResult, ProviderConfig } from '@/types';
-import type { KIProvider } from './base';
+import type { ProviderType, ModelInfo, ImageProcessParams, ImageProcessResult, ProviderConfig } from './types.js';
+import type { KIProvider, ConnectionResult } from './base.js';
 
 export class OllamaProvider implements KIProvider {
   name: ProviderType = 'ollama';
@@ -17,14 +17,20 @@ export class OllamaProvider implements KIProvider {
     return this.client;
   }
 
-  async testConnection(config: ProviderConfig): Promise<boolean> {
+  async testConnection(config: ProviderConfig): Promise<ConnectionResult> {
+    const host = config.url || 'http://localhost:11434';
     try {
       const client = this.getClient(config.url);
       const response = await client.list();
-      return response.models.length > 0;
-    } catch (error) {
-      console.error('Ollama connection test failed:', error);
-      return false;
+      if (response.models.length === 0) {
+        return { connected: true, error: 'Connected, but no models installed. Run "ollama pull <model>" first.' };
+      }
+      return { connected: true };
+    } catch (error: any) {
+      if (error?.cause?.code === 'ECONNREFUSED') {
+        return { connected: false, error: `Cannot reach Ollama at ${host}. Is Ollama running?` };
+      }
+      return { connected: false, error: error?.message || 'Connection failed.' };
     }
   }
 
@@ -33,24 +39,14 @@ export class OllamaProvider implements KIProvider {
       const client = this.getClient(config.url);
       const response = await client.list();
       
-      // Known vision-capable models
-      const visionModels = [
-        'llava',
-        'llava-v1.6',
-        'bakllava',
-        'qwen-vl',
-        'qwen2-vl',
-        'moondream',
-      ];
-      
       return response.models.map(model => ({
         id: model.name,
         name: model.name,
-        supportsVision: visionModels.some(vm => model.name.toLowerCase().includes(vm)),
+        supportsVision: this.isVisionModel(model.name),
         provider: this.name as ProviderType,
         contextWindow: (model.details as any)?.context_length || 4096,
-        maxImageSize: undefined, // Local, no limit
-        costPerImage: 0, // Free
+        maxImageSize: undefined,
+        costPerImage: 0,
       }));
     } catch (error) {
       console.error('Failed to list Ollama models:', error);
@@ -58,31 +54,23 @@ export class OllamaProvider implements KIProvider {
     }
   }
 
-  async supportsVision(modelId: string, _config: ProviderConfig): Promise<boolean> {
-    const visionModels = [
-      'llava',
-      'llava-v1.6',
-      'bakllava',
-      'qwen-vl',
-      'qwen2-vl',
-      'moondream',
-    ];
-    
-    return visionModels.some(vm => modelId.toLowerCase().includes(vm));
+  private isVisionModel(modelId: string): boolean {
+    const id = modelId.toLowerCase().split(':')[0]; // strip tag: "qwen3-vl:235b-instruct-cloud" → "qwen3-vl"
+    const visionPrefixes = ['llava', 'bakllava', 'moondream', 'minicpm-v', 'llava-phi', 'granite3-vision', 'smolvlm'];
+    const hasVlSuffix = id.endsWith('-vl') || id.endsWith('vl'); // qwen3-vl, qwen2-vl, qwen-vl, ...
+    const hasVisionWord = id.includes('vision');
+    return hasVlSuffix || hasVisionWord || visionPrefixes.some(p => id.includes(p));
   }
 
-  async processImage(params: ImageProcessParams): Promise<ImageProcessResult> {
+  async supportsVision(modelId: string, _config: ProviderConfig): Promise<boolean> {
+    return this.isVisionModel(modelId);
+  }
+
+  async processImage(params: ImageProcessParams, config: ProviderConfig): Promise<ImageProcessResult> {
     const startTime = Date.now();
-    
-    const config = {
-      url: params.provider === 'ollama' 
-        ? (await this.getStoredUrl()) 
-        : 'http://localhost:11434',
-    };
     
     const client = this.getClient(config.url);
 
-    // Prepare prompt
     let prompt = params.prompt;
     
     if (params.maskBase64) {
@@ -90,7 +78,6 @@ export class OllamaProvider implements KIProvider {
     }
 
     try {
-      // Convert base64 to Uint8Array for Ollama
       const imageData = this.base64ToUint8Array(params.imageBase64);
       
       const response = await client.chat({
@@ -106,9 +93,8 @@ export class OllamaProvider implements KIProvider {
       });
 
       const processingTime = Date.now() - startTime;
-      const cost = 0; // Local models are free
+      const cost = 0;
 
-      // For now, return original image - in future versions, we can process edits
       return {
         resultImageBase64: params.imageBase64,
         description: response.message?.content || 'No response',
@@ -117,12 +103,22 @@ export class OllamaProvider implements KIProvider {
       };
     } catch (error) {
       console.error('Ollama image processing failed:', error);
-      throw error;
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.includes('does not support image input') || message.includes('image input')) {
+        throw new Error(`Model "${params.model}" does not support image input. Please select a vision model (llava, qwen-vl, bakllava) in Settings.`);
+      }
+      if (message.includes('model') && message.includes('not found')) {
+        throw new Error(`Model "${params.model}" is not installed. Run: ollama pull ${params.model}`);
+      }
+      if (message.includes('404') || (error as any)?.status === 404) {
+        throw new Error(`Model "${params.model}" not found on Ollama server (404). Run: ollama pull ${params.model}`);
+      }
+      throw new Error(`Ollama error: ${message}`);
     }
   }
 
   getCostEstimate(_modelId: string, _imageSize: number): number {
-    return 0; // Local models are free
+    return 0;
   }
 
   private base64ToUint8Array(base64: string): Uint8Array {
@@ -133,15 +129,5 @@ export class OllamaProvider implements KIProvider {
       bytes[i] = binaryString.charCodeAt(i);
     }
     return bytes;
-  }
-
-  private async getStoredUrl(): Promise<string | undefined> {
-    if (window.electronAPI) {
-      const result = await window.electronAPI.storageGet('ollama-url');
-      if (result.success && result.value) {
-        return result.value;
-      }
-    }
-    return undefined;
   }
 }

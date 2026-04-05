@@ -4,6 +4,7 @@ import { contextBridge, ipcRenderer } from 'electron';
 export const electronAPI = {
   // File Operations
   openFile: () => ipcRenderer.invoke('file:open'),
+  readFile: (filePath: string) => ipcRenderer.invoke('file:read', { filePath }),
   saveFile: (filePath: string, data: Buffer) => ipcRenderer.invoke('file:save', { filePath, data }),
   exportFile: (defaultPath: string, data: Buffer) => 
     ipcRenderer.invoke('file:export', { defaultPath, data }),
@@ -27,6 +28,16 @@ export const electronAPI = {
   // App Info
   getVersion: () => ipcRenderer.invoke('app:getVersion'),
   getPlatform: () => ipcRenderer.invoke('app:getPlatform'),
+  
+  // KI Provider Operations
+  kiTestConnection: (config: Record<string, any>, modelId?: string) =>
+    ipcRenderer.invoke('ki:testConnection', { config, modelId }),
+  kiListModels: (config: Record<string, any>) => 
+    ipcRenderer.invoke('ki:listModels', { config }),
+  kiCheckVisionCapability: (modelId: string, config: Record<string, any>) => 
+    ipcRenderer.invoke('ki:checkVisionCapability', { modelId, config }),
+  kiProcessImage: (params: Record<string, any>, config: Record<string, any>) => 
+    ipcRenderer.invoke('ki:processImage', { params, config }),
   
   // Auto-update
   restart: () => ipcRenderer.invoke('app:restart'),
