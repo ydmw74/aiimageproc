@@ -81,27 +81,32 @@ export const useAppStore = create<AppStore>()(
       
       // Image Operations
       loadImage: async (file: File) => {
-        const reader = new FileReader();
-        reader.onload = (e) => {
-          const img = new Image();
-          img.onload = () => {
-            set({
-              originalImage: {
-                id: crypto.randomUUID(),
-                src: e.target?.result as string,
-                width: img.width,
-                height: img.height,
-                name: file.name,
-              },
-              resultImage: null,
-              masks: [],
-              undoStack: [],
-              redoStack: [],
-            });
+        return new Promise<void>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = (e) => {
+            const img = new Image();
+            img.onload = () => {
+              set({
+                originalImage: {
+                  id: crypto.randomUUID(),
+                  src: e.target?.result as string,
+                  width: img.width,
+                  height: img.height,
+                  name: file.name,
+                },
+                resultImage: null,
+                masks: [],
+                undoStack: [],
+                redoStack: [],
+              });
+              resolve();
+            };
+            img.onerror = reject;
+            img.src = e.target?.result as string;
           };
-          img.src = e.target?.result as string;
-        };
-        reader.readAsDataURL(file);
+          reader.onerror = reject;
+          reader.readAsDataURL(file);
+        });
       },
       
       setResultImage: (imageData: ImageData) => {
@@ -222,7 +227,9 @@ export const useAppStore = create<AppStore>()(
           }
           
           // Add mask instruction if masks exist
-          finalPrompt = getMaskedPrompt(finalPrompt, state.masks.length > 0);
+          if (state.masks.length > 0) {
+            finalPrompt = getMaskedPrompt(finalPrompt);
+          }
           
           // Extract mask from canvas (if any masks exist)
           let maskBase64: string | undefined = undefined;
@@ -389,7 +396,6 @@ export const useAppStore = create<AppStore>()(
     {
       name: 'aiimageproc-storage',
       partialize: (state) => ({
-        providerConfigs: state.providerConfigs,
         selectedProvider: state.selectedProvider,
         selectedModel: state.selectedModel,
         brushSize: state.brushSize,

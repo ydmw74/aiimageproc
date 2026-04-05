@@ -78,7 +78,7 @@ function createWindow() {
     mainWindow.loadURL('http://localhost:5173');
     mainWindow.webContents.openDevTools();
   } else {
-    mainWindow.loadFile(join(__dirname, '../dist/index.html'));
+    mainWindow.loadFile(join(__dirname, '../index.html'));
   }
 
   mainWindow.on('closed', () => {
@@ -131,6 +131,17 @@ ipcMain.handle('file:open', async () => {
 
 ipcMain.handle('file:save', async (_event, { filePath, data }) => {
   try {
+    const path = await import('path');
+    const userDataPath = app.getPath('userData');
+    const downloadsPath = app.getPath('downloads');
+    
+    const resolvedPath = path.resolve(filePath);
+    const isAllowed = resolvedPath.startsWith(userDataPath) || resolvedPath.startsWith(downloadsPath);
+    
+    if (!isAllowed) {
+      return { success: false, error: 'Writing to this location is not allowed for security reasons.' };
+    }
+    
     const fs = await import('fs/promises');
     await fs.writeFile(filePath, data);
     return { success: true };
@@ -282,11 +293,14 @@ ipcMain.handle('db:deleteProject', async (_event, { id }) => {
   if (!db) return { success: false, error: 'Database not initialized' };
   
   try {
+    db.prepare('BEGIN TRANSACTION').run();
     db.prepare('DELETE FROM edit_history WHERE project_id = ?').run(id);
     db.prepare('DELETE FROM masks WHERE project_id = ?').run(id);
     db.prepare('DELETE FROM projects WHERE id = ?').run(id);
+    db.prepare('COMMIT').run();
     return { success: true };
   } catch (error) {
+    db.prepare('ROLLBACK').run();
     return { success: false, error: String(error) };
   }
 });

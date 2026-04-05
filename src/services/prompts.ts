@@ -79,10 +79,6 @@ export function generatePromptFromFilters(
   return parts.join(' ');
 }
 
-export function getMaskedPrompt(prompt: string, hasMask: boolean): string {
-  if (!hasMask) {
-    return prompt;
-  }
-  
+export function getMaskedPrompt(prompt: string): string {
   return `[MASK PROVIDED] Only edit the marked/masked areas. Keep all other parts of the image unchanged.\n\n${prompt}`;
 }
